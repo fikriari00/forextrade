@@ -1,6 +1,7 @@
+from telethon.sessions import StringSession
+from telethon import TelegramClient, events
 import os
 from fastapi import FastAPI
-from telethon import TelegramClient, events
 from parser import parse_signal
 from signal_store import save_signal, get_signal
 
@@ -10,16 +11,18 @@ SESSION = os.getenv("SESSION")
 SOURCE_CHAT_ID = int(os.getenv("SOURCE_CHAT_ID"))
 
 app = FastAPI()
-client = TelegramClient(SESSION, API_ID, API_HASH)
+
+client = TelegramClient(
+    StringSession(SESSION),
+    API_ID,
+    API_HASH
+)
 
 @client.on(events.NewMessage(chats=SOURCE_CHAT_ID))
 async def handler(event):
     signal = parse_signal(event.raw_text)
-    if signal:
-        if save_signal(signal):
-            print("✅ Signal saved:", signal)
-        else:
-            print("⚠️ Duplicate signal ignored")
+    if signal and save_signal(signal):
+        print("✅ Signal saved")
 
 @app.on_event("startup")
 async def start_bot():
