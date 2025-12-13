@@ -1,7 +1,8 @@
-from telethon.sessions import StringSession
-from telethon import TelegramClient, events
 import os
+import asyncio
 from fastapi import FastAPI
+from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from parser import parse_signal
 from signal_store import save_signal, get_signal
 
@@ -22,12 +23,12 @@ client = TelegramClient(
 async def handler(event):
     signal = parse_signal(event.raw_text)
     if signal and save_signal(signal):
-        print("✅ Signal saved")
+        print("✅ Signal saved:", signal["id"])
 
 @app.on_event("startup")
 async def start_bot():
-    await client.start()
-    print("🤖 Telegram connected")
+    asyncio.create_task(client.start())
+    print("🤖 Telegram client starting...")
 
 @app.get("/signal/latest")
 def latest_signal():
