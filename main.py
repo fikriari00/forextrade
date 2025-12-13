@@ -1,5 +1,6 @@
 import os
 import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -10,8 +11,6 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
 SOURCE_CHAT_ID = int(os.getenv("SOURCE_CHAT_ID"))
-
-app = FastAPI()
 
 client = TelegramClient(
     StringSession(SESSION),
@@ -25,10 +24,20 @@ async def handler(event):
     if signal and save_signal(signal):
         print("✅ Signal saved:", signal["id"])
 
-@app.on_event("startup")
-async def start_bot():
-    asyncio.create_task(client.start())
-    print("🤖 Telegram client starting...")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🤖 Connecting to Telegram...")
+    await client.start()
+    print("✅ Telegram connected")
+
+    task = asyncio.create_task(client.run_until_disconnected())
+    yield
+
+    print("🛑 Shutting down Telegram client")
+    client.disconnect()
+    task.cancel()
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/signal/latest")
 def latest_signal():
