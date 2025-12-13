@@ -7,12 +7,12 @@ from signal_store import save_signal, get_signal
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION")
-SOURCE_CHANNEL = os.getenv("SOURCE_CHANNEL")
+SOURCE_CHAT_ID = int(os.getenv("SOURCE_CHAT_ID"))
 
 app = FastAPI()
 client = TelegramClient(SESSION, API_ID, API_HASH)
 
-@client.on(events.NewMessage(chats=SOURCE_CHANNEL))
+@client.on(events.NewMessage(chats=SOURCE_CHAT_ID))
 async def handler(event):
     signal = parse_signal(event.raw_text)
     if signal:
