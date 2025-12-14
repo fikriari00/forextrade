@@ -1,24 +1,20 @@
-
 import os
 import re
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
-# ======================================================
-# ENV
-# ======================================================
+# ================= ENV =================
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
 
 SOURCE_A = int(os.environ["SOURCE_A"])  # Crypto
-SOURCE_B = int(os.environ["SOURCE_B"])  # XAUUSD
+SOURCE_B = int(os.environ["SOURCE_B"])  # XAU
 
-# ======================================================
-# TELEGRAM CLIENT
-# ======================================================
+# ================= TELETHON =================
 client = TelegramClient(
     StringSession(SESSION_STRING),
     API_ID,
@@ -27,59 +23,54 @@ client = TelegramClient(
 
 latest_signal = {}
 
-# ======================================================
-# SYMBOL MAP
-# ======================================================
-ALLOWED_BASE = ["ADA", "SOL", "LINK", "LTC", "XRP", "DOGE"]
+# ================= SYMBOL MAP =================
+PAIR_MAP = {
+    "ADA": "ADAUSD",
+    "SOL": "SOLUSD",
+    "LINK": "LINKUSD",
+    "LTC": "LTCUSD",
+    "XRP": "XRPUSD",
+    "DOGE": "DOGEUSD"
+}
 
-def map_symbol(pair: str):
-    pair = pair.upper().strip()
-    if pair.endswith("/USDT"):
-        base = pair.replace("/USDT", "")
-        if base in ALLOWED_BASE:
-            return base + "USD"
-    return None
-
-# ======================================================
-# PARSER CRYPTO
-# ======================================================
+# ================= PARSER A =================
 def parse_crypto(text: str):
-    pair = re.search(r"Pair:\s*([A-Z/]+)", text)
-    side = re.search(r"Position:.*(Short|Long)", text, re.I)
-    entry = re.search(r"Entry Price:\s*([\d.]+)", text)
-    tp = re.search(r"Take Profit:\s*([\d.]+)", text)
-    sl = re.search(r"Stop Loss:\s*([\d.]+)", text)
+    try:
+        pair = re.search(r"Pair:\s*([A-Z]+)/USDT", text)
+        side = re.search(r"Position:.*(Short|Long)", text, re.I)
+        entry = re.search(r"Entry Price:\s*([\d.]+)", text)
+        tp = re.search(r"Take Profit:\s*([\d.]+)", text)
+        sl = re.search(r"Stop Loss:\s*([\d.]+)", text)
 
-    if not all([pair, side, entry, tp, sl]):
+        if not all([pair, side, entry, tp, sl]):
+            return None
+
+        base = pair.group(1)
+        if base not in PAIR_MAP:
+            return None
+
+        return {
+            "id": f"{PAIR_MAP[base]}_{side.group(1).lower()}_{entry.group(1)}",
+            "symbol": PAIR_MAP[base],
+            "side": side.group(1).lower(),
+            "entry_price": float(entry.group(1)),
+            "stop_loss": float(sl.group(1)),
+            "take_profit": float(tp.group(1)),
+            "execute": True,
+            "source": "crypto"
+        }
+    except:
         return None
 
-    symbol = map_symbol(pair.group(1))
-    if not symbol:
-        return None
-
-    return {
-        "id": f"{symbol}_{side.group(1).lower()}_{entry.group(1)}",
-        "symbol": symbol,
-        "side": side.group(1).lower(),
-        "entry_type": "market",
-        "entry_price": float(entry.group(1)),
-        "stop_loss": float(sl.group(1)),
-        "take_profit": [float(tp.group(1))],
-        "execute": True,
-        "source": "crypto"
-    }
-
-# ======================================================
-# PARSER XAUUSD
-# ======================================================
+# ================= PARSER B =================
 def parse_xau(text: str):
     try:
         lines = text.lower().splitlines()
-        first = lines[0].split()
+        first = lines[0].split("@")
 
-        symbol = first[0].upper()      # XAUUSD
-        side = first[1]               # sell / buy
-        entry = float(first[-1].split("@")[1])
+        symbol = first[0].upper()
+        side = first[1].split()[0]
+        entry = float(first[2])
 
         sl = float(lines[1].split("@")[1])
 
@@ -92,59 +83,43 @@ def parse_xau(text: str):
             "id": f"{symbol}_{side}_{entry}",
             "symbol": symbol,
             "side": side,
-            "entry_type": "market",
             "entry_price": entry,
             "stop_loss": sl,
-            "take_profit": tps,
+            "take_profit": tps[0],
             "execute": True,
             "source": "xau"
         }
     except:
         return None
 
-# ======================================================
-# TELEGRAM LISTENER
-# ======================================================
+# ================= TELEGRAM LISTENER =================
 @client.on(events.NewMessage)
 async def handler(event):
     global latest_signal
+    chat_id = event.chat_id
+    text = event.raw_text
 
-    if event.chat_id == SOURCE_A:
-        signal = parse_crypto(event.raw_text)
-    elif event.chat_id == SOURCE_B:
-        signal = parse_xau(event.raw_text)
-    else:
-        return
+    signal = None
+    if chat_id == SOURCE_A:
+        signal = parse_crypto(text)
+    elif chat_id == SOURCE_B:
+        signal = parse_xau(text)
 
     if signal:
         latest_signal = signal
         print("✅ SIGNAL SAVED:", signal)
 
-# ======================================================
-# FASTAPI LIFESPAN (BENAR)
-# ======================================================
+# ================= FASTAPI =================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await client.start()
+    await client.connect()
+    print("✅ Telegram connected")
     yield
     await client.disconnect()
 
 app = FastAPI(lifespan=lifespan)
 
-# ======================================================
-# API
-# ======================================================
 @app.get("/signal/latest")
 def get_signal():
     return latest_signal or {}
 
-# ======================================================
-# RUN
-# ======================================================
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8000))
-    )
