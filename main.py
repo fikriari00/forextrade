@@ -2,41 +2,40 @@ import os
 import re
 import asyncio
 from fastapi import FastAPI
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-import os
 
 # ================= ENV =================
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+SESSION_STRING = os.environ["SESSION_STRING"]
 
+SOURCE_A = int(os.environ["SOURCE_A"])  # Crypto channel
+SOURCE_B = int(os.environ["SOURCE_B"])  # XAUUSD channel
 
+# ================= TELEGRAM CLIENT =================
 client = TelegramClient(
-    StringSession(os.environ["SESSION_STRING"]),
-    int(os.environ["API_ID"]),
-    os.environ["API_HASH"]
+    StringSession(SESSION_STRING),
+    API_ID,
+    API_HASH
 )
-
-SOURCE_A = int(os.getenv("SOURCE_A"))  # Crypto channel
-SOURCE_B = int(os.getenv("SOURCE_B"))  # XAUUSD channel
 
 # ================= APP =================
 app = FastAPI()
 latest_signal = {}
-
-# ================= TELEGRAM =================
-client = TelegramClient(SESSION, API_ID, API_HASH)
 
 # ================= SYMBOL MAP =================
 ALLOWED_BASE = ["ADA", "SOL", "LINK", "LTC", "XRP", "DOGE"]
 
 def map_symbol(pair: str):
     pair = pair.upper().strip()
-    if "/USDT" in pair:
+    if pair.endswith("/USDT"):
         base = pair.replace("/USDT", "")
         if base in ALLOWED_BASE:
             return base + "USD"
     return None
 
-# ================= PARSER A =================
+# ================= PARSER A (CRYPTO) =================
 def parse_crypto(text: str):
     pair = re.search(r"Pair:\s*([A-Z/]+)", text)
     side = re.search(r"Position:.*(Short|Long)", text, re.I)
@@ -63,15 +62,17 @@ def parse_crypto(text: str):
         "source": "crypto"
     }
 
-# ================= PARSER B =================
+# ================= PARSER B (XAUUSD) =================
 def parse_xau(text: str):
-    lines = text.lower().splitlines()
-
     try:
-        first = lines[0].split("@")
-        symbol = first[0].upper()
-        side   = first[1].split()[0]
-        entry  = float(first[2])
+        lines = text.lower().splitlines()
+
+        first = lines[0]              # xauusd sell now@4334
+        parts = first.split()
+
+        symbol = parts[0].upper()     # XAUUSD
+        side = parts[1]               # sell
+        entry = float(parts[-1].split("@")[1])
 
         sl = float(lines[1].split("@")[1])
 
@@ -99,8 +100,8 @@ def parse_xau(text: str):
 async def handler(event):
     global latest_signal
 
-    chat_id = event.chat_id
     text = event.raw_text
+    chat_id = event.chat_id
 
     signal = None
 
@@ -121,9 +122,12 @@ def get_signal():
 # ================= START =================
 @app.on_event("startup")
 async def startup():
-    asyncio.create_task(client.start())
-    
+    asyncio.create_task(client.run_until_disconnected())
+
+async def main():
+    await client.start()
+
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    asyncio.get_event_loop().create_task(main())
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
