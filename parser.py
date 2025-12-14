@@ -1,49 +1,158 @@
+import os
 import re
-from datetime import datetime
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 
-def parse_signal(text: str):
-    text = text.lower()
+# ======================================================
+# ENV VARIABLES (WAJIB ADA DI RAILWAY)
+# ======================================================
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+SESSION_STRING = os.environ["SESSION_STRING"]
 
-    # --- Pair ---
-    pair_match = re.search(r'(xauusd|[a-z]{3,10}usdt)', text)
-    if not pair_match:
+SOURCE_A = int(os.environ["SOURCE_A"])  # Channel crypto
+SOURCE_B = int(os.environ["SOURCE_B"])  # Channel XAUUSD
+
+# ======================================================
+# TELEGRAM CLIENT
+# ======================================================
+client = TelegramClient(
+    StringSession(SESSION_STRING),
+    API_ID,
+    API_HASH
+)
+
+# ======================================================
+# GLOBAL STATE
+# ======================================================
+latest_signal = {}
+
+# ======================================================
+# SYMBOL MAPPING
+# ======================================================
+ALLOWED_BASE = ["ADA", "SOL", "LINK", "LTC", "XRP", "DOGE"]
+
+def map_symbol(pair: str):
+    pair = pair.upper().strip()
+    if pair.endswith("/USDT"):
+        base = pair.replace("/USDT", "")
+        if base in ALLOWED_BASE:
+            return base + "USD"
+    return None
+
+# ======================================================
+# PARSER SOURCE A (CRYPTO)
+# ======================================================
+def parse_crypto(text: str):
+    pair = re.search(r"Pair:\s*([A-Z/]+)", text)
+    side = re.search(r"Position:.*(Short|Long)", text, re.I)
+    entry = re.search(r"Entry Price:\s*([\d.]+)", text)
+    tp = re.search(r"Take Profit:\s*([\d.]+)", text)
+    sl = re.search(r"Stop Loss:\s*([\d.]+)", text)
+
+    if not all([pair, side, entry, tp, sl]):
         return None
-    symbol = pair_match.group(1).upper()
 
-    # --- Side ---
-    side = "buy" if "buy" in text else "sell" if "sell" in text else None
-    if not side:
+    symbol = map_symbol(pair.group(1))
+    if not symbol:
         return None
 
-    # --- Entry ---
-    entry_price = None
-    entry_type = "market"
-    entry_match = re.search(r'@(\d+\.?\d*)', text)
-    if entry_match:
-        entry_price = float(entry_match.group(1))
-
-    # --- Stop Loss ---
-    sl_match = re.search(r'sl@(\d+\.?\d*)', text)
-    if not sl_match:
-        return None
-    stop_loss = float(sl_match.group(1))
-
-    # --- Take Profits ---
-    tps = re.findall(r'tp\d*@?(\d+\.?\d*)', text)
-    take_profit = [float(tp) for tp in tps]
-
-    # --- Build JSON ---
-    signal = {
-        "id": f"{symbol}_{side}_{entry_price or 'mkt'}",
+    return {
+        "id": f"{symbol}_{side.group(1).lower()}_{entry.group(1)}",
         "symbol": symbol,
-        "side": side,
-        "entry_type": entry_type,
-        "entry_price": entry_price,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
+        "side": side.group(1).lower(),
+        "entry_type": "market",
+        "entry_price": float(entry.group(1)),
+        "stop_loss": float(sl.group(1)),
+        "take_profit": [float(tp.group(1))],
         "execute": True,
-        "timestamp": datetime.now().isoformat(),
-        "source": "telegram"
+        "source": "crypto"
     }
 
-    return signal
+# ======================================================
+# PARSER SOURCE B (XAUUSD)
+# ======================================================
+def parse_xau(text: str):
+    try:
+        lines = text.lower().splitlines()
+
+        # contoh: xauusd sell now@4334
+        first = lines[0].split()
+        symbol = first[0].upper()      # XAUUSD
+        side = first[1]               # sell / buy
+        entry = float(first[-1].split("@")[1])
+
+        sl = float(lines[1].split("@")[1])
+
+        tps = []
+        for l in lines:
+            if l.startswith("tp"):
+                tps.append(float(l.split("@")[1]))
+
+        return {
+            "id": f"{symbol}_{side}_{entry}",
+            "symbol": symbol,
+            "side": side,
+            "entry_type": "market",
+            "entry_price": entry,
+            "stop_loss": sl,
+            "take_profit": tps,
+            "execute": True,
+            "source": "xau"
+        }
+    except:
+        return None
+
+# ======================================================
+# TELEGRAM LISTENER
+# ======================================================
+@client.on(events.NewMessage)
+async def handler(event):
+    global latest_signal
+
+    chat_id = event.chat_id
+    text = event.raw_text
+
+    signal = None
+
+    if chat_id == SOURCE_A:
+        signal = parse_crypto(text)
+    elif chat_id == SOURCE_B:
+        signal = parse_xau(text)
+
+    if signal:
+        latest_signal = signal
+        print("✅ SIGNAL SAVED:", signal)
+
+# ======================================================
+# FASTAPI LIFESPAN (RESMI & STABLE)
+# ======================================================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await client.start()
+    task = asyncio.create_task(client.run_until_disconnected())
+    yield
+    task.cancel()
+
+app = FastAPI(lifespan=lifespan)
+
+# ======================================================
+# API ENDPOINT
+# ======================================================
+@app.get("/signal/latest")
+def get_latest_signal():
+    return latest_signal or {}
+
+# ======================================================
+# ENTRY POINT (RAILWAY)
+# ======================================================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8000))
+    )
