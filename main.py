@@ -34,8 +34,7 @@ PAIR_MAP = {
     "SOL": "SOLUSD",
     "LINK": "LINKUSD",
     "LTC": "LTCUSD",
-    "XRP": "XRPUSD",
-    "DOGE": "DOGEUSD"
+    "XRP": "XRPUSD"
 }
 
 # ==================================================
