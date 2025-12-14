@@ -1,44 +1,121 @@
 import os
+import re
 import asyncio
-from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from telethon import TelegramClient, events
-from telethon.sessions import StringSession
-from parser import parse_signal
-from signal_store import save_signal, get_signal
+from dotenv import load_dotenv
 
-API_ID = int(os.getenv("API_ID"))
+load_dotenv()
+
+# ================= ENV =================
+API_ID   = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-SESSION = os.getenv("SESSION")
-SOURCE_CHAT_ID = int(os.getenv("SOURCE_CHAT_ID"))
+SESSION  = "railway_session"
 
-client = TelegramClient(
-    StringSession(SESSION),
-    API_ID,
-    API_HASH
-)
+SOURCE_A = int(os.getenv("SOURCE_A"))  # Crypto channel
+SOURCE_B = int(os.getenv("SOURCE_B"))  # XAUUSD channel
 
-@client.on(events.NewMessage(chats=SOURCE_CHAT_ID))
+# ================= APP =================
+app = FastAPI()
+latest_signal = {}
+
+# ================= TELEGRAM =================
+client = TelegramClient(SESSION, API_ID, API_HASH)
+
+# ================= SYMBOL MAP =================
+ALLOWED_BASE = ["ADA", "SOL", "LINK", "LTC", "XRP", "DOGE"]
+
+def map_symbol(pair: str):
+    pair = pair.upper().strip()
+    if "/USDT" in pair:
+        base = pair.replace("/USDT", "")
+        if base in ALLOWED_BASE:
+            return base + "USD"
+    return None
+
+# ================= PARSER A =================
+def parse_crypto(text: str):
+    pair = re.search(r"Pair:\s*([A-Z/]+)", text)
+    side = re.search(r"Position:.*(Short|Long)", text, re.I)
+    entry = re.search(r"Entry Price:\s*([\d.]+)", text)
+    tp = re.search(r"Take Profit:\s*([\d.]+)", text)
+    sl = re.search(r"Stop Loss:\s*([\d.]+)", text)
+
+    if not all([pair, side, entry, tp, sl]):
+        return None
+
+    symbol = map_symbol(pair.group(1))
+    if not symbol:
+        return None
+
+    return {
+        "id": f"{symbol}_{side.group(1).lower()}_{entry.group(1)}",
+        "symbol": symbol,
+        "side": side.group(1).lower(),
+        "entry_type": "market",
+        "entry_price": float(entry.group(1)),
+        "stop_loss": float(sl.group(1)),
+        "take_profit": [float(tp.group(1))],
+        "execute": True,
+        "source": "crypto"
+    }
+
+# ================= PARSER B =================
+def parse_xau(text: str):
+    lines = text.lower().splitlines()
+
+    try:
+        first = lines[0].split("@")
+        symbol = first[0].upper()
+        side   = first[1].split()[0]
+        entry  = float(first[2])
+
+        sl = float(lines[1].split("@")[1])
+
+        tps = []
+        for l in lines:
+            if l.startswith("tp"):
+                tps.append(float(l.split("@")[1]))
+
+        return {
+            "id": f"{symbol}_{side}_{entry}",
+            "symbol": symbol,
+            "side": side,
+            "entry_type": "market",
+            "entry_price": entry,
+            "stop_loss": sl,
+            "take_profit": tps,
+            "execute": True,
+            "source": "xau"
+        }
+    except:
+        return None
+
+# ================= TELEGRAM LISTENER =================
+@client.on(events.NewMessage)
 async def handler(event):
-    signal = parse_signal(event.raw_text)
-    if signal and save_signal(signal):
-        print("✅ Signal saved:", signal["id"])
+    global latest_signal
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("🤖 Connecting to Telegram...")
-    await client.start()
-    print("✅ Telegram connected")
+    chat_id = event.chat_id
+    text = event.raw_text
 
-    task = asyncio.create_task(client.run_until_disconnected())
-    yield
+    signal = None
 
-    print("🛑 Shutting down Telegram client")
-    client.disconnect()
-    task.cancel()
+    if chat_id == SOURCE_A:
+        signal = parse_crypto(text)
+    elif chat_id == SOURCE_B:
+        signal = parse_xau(text)
 
-app = FastAPI(lifespan=lifespan)
+    if signal:
+        latest_signal = signal
+        print("✅ SIGNAL SAVED:", signal)
 
+# ================= API =================
 @app.get("/signal/latest")
-def latest_signal():
-    return get_signal()
+def get_signal():
+    return latest_signal or {}
+
+# ================= START =================
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(client.start())
