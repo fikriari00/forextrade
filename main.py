@@ -6,8 +6,6 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 import os
 
-load_dotenv()
-
 # ================= ENV =================
 
 
