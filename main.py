@@ -2,15 +2,20 @@ import os
 import re
 import asyncio
 from fastapi import FastAPI
-from telethon import TelegramClient, events
-from dotenv import load_dotenv
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+import os
 
 load_dotenv()
 
 # ================= ENV =================
-API_ID   = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-SESSION  = "railway_session"
+
+
+client = TelegramClient(
+    StringSession(os.environ["SESSION_STRING"]),
+    int(os.environ["API_ID"]),
+    os.environ["API_HASH"]
+)
 
 SOURCE_A = int(os.getenv("SOURCE_A"))  # Crypto channel
 SOURCE_B = int(os.getenv("SOURCE_B"))  # XAUUSD channel
